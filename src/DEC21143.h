@@ -133,6 +133,7 @@ public:
   virtual void  start_threads();
   virtual void  stop_threads();
   void          update_irq();
+  bool          mii_is_link_up();
 private:
   static int  nic_num;
 
@@ -162,6 +163,7 @@ private:
   struct SNIC_state
   {
     bool  irq_was_asserted;   /**< remember state of IRQ */
+    bool  mii_mode;
 
     u8    mac[6];             /**< ethernet address */
     u8    setup_filter[192];  /**< filter for perfect filtering */

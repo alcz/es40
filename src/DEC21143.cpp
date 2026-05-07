@@ -166,7 +166,6 @@
 #define DEBUG_NIC_FILTER
 #define DEBUG_NIC_SROM
 #endif
-
 //#define DEBUG_NIC_IRQ
 
   /*  Internal states during MII data stream decode:  */
@@ -233,7 +232,7 @@ void CDEC21143::run()
 u32             dec21143_cfg_data[64] = {
 	/*00*/ 0x00191011,  // CFID: vendor + device
 	/*04*/ 0x02800000,  // CFCS: command + status
-	/*08*/ 0x02000030,  // CFRV: class + revision   //dth:was 41
+	/*08*/ 0x02000041,  // CFRV: class + revision   //dth:was 41 -- raised again to prefer MII
 	/*0c*/ 0x00000000,  // CFLT: latency timer + cache line size
 	/*10*/ 0x00000001,  // BAR0: CBIO
 	/*14*/ 0x00000000,  // BAR1: CBMA
@@ -553,7 +552,8 @@ void CDEC21143::receive_process()
 			{
 				bool  resl = rx_queue->add_tail(packet_data, packet_header->caplen,
 					calc_crc, true);
-				state.reg[CSR_SIASTAT / 8] |= SIASTAT_TRA;  //set 10bT activity
+				// state.reg[CSR_SIASTAT / 8] |= SIASTAT_TRA;  //set 10bT activity
+				// re-add under if( ! state.mii_mode )
 			}
 		}
 
@@ -575,7 +575,46 @@ u32 CDEC21143::nic_read(u32 address, int dsize)
 
 	if ((address & 7) == 0 && regnr < 32)
 	{
-		data = state.reg[regnr];
+		switch (regnr)
+		{
+		        case CSR_STATUS / 8:
+#ifdef DEBUG_NIC
+				if (state.mii_mode)
+					printf("21143 CSR(5) read, state.mii.phy_reg[MII_BMSR] & (BMSR_ACOMP | BMSR_LINK) = %d, %x, unfiltered: 0x%08x\n", 
+						(state.mii.phy_reg[MII_BMSR] & (BMSR_ACOMP | BMSR_LINK)) == (BMSR_ACOMP | BMSR_LINK),
+						state.mii.phy_reg[MII_BMSR], state.reg[CSR_STATUS / 8] );
+#endif
+				// If MII autoneg complete and link up, suppress (LKF) or upper word - to minimize upsetting of NT driver while debugging
+				if (mii_is_link_up())
+					data = state.reg[CSR_STATUS / 8] & 0x0000ffff;
+				else data = state.reg[CSR_STATUS / 8];
+
+				if ((data & STATUS_TI) && !(state.reg[CSR_OPMODE/8] & OPMODE_ST))
+				{
+					printf("BUG: TI set while TE=0, CSR5=%08x CSR6=%08x\n",
+						data, state.reg[CSR_OPMODE/8]);
+				}
+				break;
+
+			case CSR_MIIROM / 8:  /* CSR9 read - do we need some form of generic CSR masking? */
+				data = state.reg[regnr];
+				data |= (1 << 2);   // bit 2 = Link Pass - driver checks (CSR9 & 4) != 0
+				data |= (1 << 1);   // bit 1 = Carrier Sense - driver checks (CSR9 & 2) != 0
+				break;
+
+			case CSR_SIASTAT / 8:
+				/* Fake autocompletion done until there is a better emulation - thx QEMU
+				to still allow to renegotiate using old code here (see CSR_SIASTAT @ nic_write),
+				re-add with if( state.mii_mode ) checks */
+
+                                // data = state.reg[CSR_SIASTAT / 8] | SIASTAT_TRA;
+
+				data = 5 << 12 /* CSR12_ANS_SHIFT */;
+				break;
+
+			default:
+				data = state.reg[regnr];
+                }
 	}
 	else
 		printf("dec21143: WARNING! unaligned access (0x%x) \n", (int)address);
@@ -686,11 +725,26 @@ void CDEC21143::nic_write(u32 address, int dsize, u32 data)
 		break;
 
 	case CSR_OPMODE:        /*  csr6:  */
+
+#ifdef DEBUG_NIC
+		if( state.mii_mode )
+			printf("[ dec21443: mii_mode was ENABLED, now it is ");
+		else
+			printf("[ dec21443: mii_mode was disabled, now it is ");
+#endif
+		state.mii_mode = (data & 0x02000000);
+#ifdef DEBUG_NIC
+		if( state.mii_mode )
+			printf("ENABLED ]\n");
+		else
+			printf("disabled ]\n");
+#endif
+
+#if 0
 		if (data & 0x02000000)
 		{
-
 			/*  A must-be-one bit.  */
-			data &= ~0x02000000;
+//			data &= ~0x02000000;
 		}
 
 		if (data & OPMODE_ST)
@@ -718,6 +772,7 @@ void CDEC21143::nic_write(u32 address, int dsize, u32 data)
 
 			//state.reg[CSR_STATUS/8] &= ~STATUS_RS;
 		}
+#endif
 
 		// Did Start/Stop Transmission change state ?
 		if ((data ^ oldreg) & OPMODE_ST)
@@ -758,8 +813,8 @@ void CDEC21143::nic_write(u32 address, int dsize, u32 data)
 					rx_queue->flush();
 				}
 			}
-			/* Mode & status changed → recompute IRQ level now. */
-			update_irq();
+			/* Mode & status changed - recompute IRQ level now. */
+			update_irq(); // <- might create IRQ storm(?) - retest
 		}
 
 		/* If mode bits affecting reception/filtering changed, rebuild BPF. */
@@ -779,6 +834,7 @@ void CDEC21143::nic_write(u32 address, int dsize, u32 data)
 		break;
 
 	case CSR_SIASTAT: /*  csr12  */
+#ifdef NIC_DEC21041 // STATUS_LNPANC meaning changed
 		if (((data & SIASTAT_ANS) == SIASTAT_ANS_START)
 			&& (state.reg[CSR_SIATXRX / 8] & SIATXRX_ANE))
 		{
@@ -801,29 +857,41 @@ void CDEC21143::nic_write(u32 address, int dsize, u32 data)
 		{
 			state.reg[CSR_SIASTAT / 8] = oldreg;
 		}
+#endif
 		break;
 
 	case CSR_SIATXRX: /*  csr14  */
 		break;
 
 	case CSR_SIACONN: /*  csr13  */
+#if 0
 		if ((data & SIACONN_SRL) && (state.reg[CSR_SIATXRX / 8] & SIATXRX_ANE))
 		{
-
 			// SIA started with autonegotiation... completes immediately in our emulated environment.
 			state.reg[CSR_SIASTAT / 8] &= ~SIASTAT_ANS;
+#ifndef NIC_DEC21041
+			state.reg[CSR_SIASTAT / 8] &= ~SIASTAT_LKF;
+#endif
 			state.reg[CSR_SIASTAT / 8] |=
 				(
 					SIASTAT_ANS_FLPGOOD |
 					SIASTAT_LPN |
 					SIASTAT_LPC
 					);
-			state.reg[CSR_STATUS / 8] |= STATUS_LNPANC;
+// STATUS_LNPANC meaning changed, flaps the connection
+			if (!(state.reg[CSR_SIATXRX / 8] & SIATXRX_TXF))
+#ifdef NIC_DEC21041
+				state.reg[CSR_STATUS / 8] |= STATUS_LNPANC;
+#else
+				state.reg[CSR_STATUS / 8] |= STATUS_LNF;
+#endif
+
 			state.reg[CSR_SIATXRX / 8] &= ~(SIATXRX_TH | SIATXRX_THX | SIATXRX_T4);
 			state.reg[CSR_SIATXRX / 8] |= SIATXRX_TXF;
 
 			//          DoClock();
 		}
+#endif
 		break;
 
 	case CSR_SIAGEN:  /*  csr15  */
@@ -845,6 +913,13 @@ void CDEC21143::set_rx_state(int rx_state)
 {
 	state.reg[CSR_STATUS / 8] &= ~STATUS_RS;
 	state.reg[CSR_STATUS / 8] |= (rx_state & STATUS_RS);
+}
+
+bool CDEC21143::mii_is_link_up()
+{
+	return (state.mii_mode && 
+		(state.mii.phy_reg[MII_BMSR] &
+		(BMSR_ACOMP | BMSR_LINK)) == (BMSR_ACOMP | BMSR_LINK));
 }
 
 /**
@@ -950,10 +1025,11 @@ void CDEC21143::mii_access(uint32_t oldreg, uint32_t idata)
 		state.mii.bit++;
 		if (state.mii.bit >= 12)
 		{
+//			printf("[ mii_access(): READ phyaddr=%d regaddr=%d = 0x%04x ]\n",
+//				state.mii.phyaddr, state.mii.regaddr,
+//				state.mii.phy_reg[state.mii.regaddr]);
 
-			/*  printf("[ mii_access(): phyaddr=0x%x regaddr=0x"
-			   "%x ]\n", state.mii.phyaddr, state.mii.regaddr);  */
-			state.mii.state = MII_STATE_A;
+				state.mii.state = MII_STATE_A;
 		}
 		break;
 
@@ -996,7 +1072,12 @@ void CDEC21143::mii_access(uint32_t oldreg, uint32_t idata)
 			if (state.mii.bit >= 29)
 			{
 				state.mii.state = MII_STATE_IDLE;
-
+				if (state.mii.regaddr == MII_BMCR)
+				{
+					tmp &= ~BMCR_RESET;
+					tmp &= ~BMCR_STARTNEG;
+					state.mii.phy_reg[state.mii.regaddr] = tmp;
+				}
 				//                              debug("[ mii_access(): WRITE to phyaddr=0x%x regaddr=0x%x: 0x%04x ]\n", state.mii.phyaddr, state.mii.regaddr, tmp);
 			}
 			break;
@@ -1006,8 +1087,8 @@ void CDEC21143::mii_access(uint32_t oldreg, uint32_t idata)
 				break;
 			tmp = state.mii.phy_reg[(state.mii.phyaddr << 5) + state.mii.regaddr];
 
-			//                      if (state.mii.bit == 13)
-			//                              debug("[ mii_access(): READ phyaddr=0x%x regaddr=0x%x: 0x%04x ]\n", state.mii.phyaddr, state.mii.regaddr, tmp);
+//			                      if (state.mii.bit == 28)
+//			                              debug("[ mii_access(): READ phyaddr=0x%x regaddr=0x%x: 0x%04x ]\n", state.mii.phyaddr, state.mii.regaddr, tmp);
 			ibit = tmp & (0x8000 >> (state.mii.bit - 13));
 			if (state.mii.bit >= 28)
 				state.mii.state = MII_STATE_IDLE;
@@ -1759,6 +1840,7 @@ void CDEC21143::ResetNIC()
 	memset(state.setup_filter, 0, sizeof(state.setup_filter));
 
 	// Reset derived/internal soft state that is not covered by the CSR array.
+
 	state.descr_skip = 0;
 	state.rx.current.len = 0;
 	state.rx.current.used = 0;
@@ -1782,18 +1864,29 @@ void CDEC21143::ResetNIC()
 	memset(&state.srom, 0, sizeof(state.srom));
 	memset(&state.mii, 0, sizeof(state.mii));
 
+	state.mii_mode = false;
+
 	/*  Register values at reset, according to the manual:  */
 	state.reg[CSR_BUSMODE / 8] = 0xfe000000;  /*  csr0   */
+
+	/* Do not initialze them, let the driver decide */
+//	state.reg[CSR_OPMODE / 8] = 0x30000040;   /* csr6 SYM MODE (rare 100Mbit) */
+//	state.reg[CSR_OPMODE / 8] = 0x32000040;   /* csr6 SYM/MII MODE */
+        /* (21143 rev 0) with SROM v3 MII seems _not_ expected by the WinNT driver */
+
 	state.reg[CSR_MIIROM / 8] = 0xfff483ff;   /*  csr9   */
+
+	state.reg[CSR_GPT / 8] = 0x0000ffff;      /*  csr11  */
 	state.reg[CSR_SIACONN / 8] = 0xffff0000;  /*  csr13  */
 	state.reg[CSR_SIATXRX / 8] = 0xffffffff;  /*  csr14  */
 	state.reg[CSR_SIAGEN / 8] = 0x8ff00000;   /*  csr15  */
 
+
 	state.tx.idling_threshold = 10;
 	state.rx.cur_addr = state.tx.cur_addr = 0;
 
-	/*  Version (= 1) and Chip count (= 1):  */
-	state.srom.data[TULIP_ROM_SROM_FORMAT_VERION] = 1;
+	/*  Version (= 4) and Chip count (= 1):  */
+	state.srom.data[TULIP_ROM_SROM_FORMAT_VERION] = 4;
 	state.srom.data[TULIP_ROM_CHIP_COUNT] = 1;
 
 	/*  Set the MAC address:  */
@@ -1804,25 +1897,47 @@ void CDEC21143::ResetNIC()
 	state.srom.data[TULIP_ROM_CHIPn_INFO_LEAF_OFFSET(0)] = leaf & 255;
 	state.srom.data[TULIP_ROM_CHIPn_INFO_LEAF_OFFSET(0) + 1] = leaf >> 8;
 
-	state.srom.data[leaf + TULIP_ROM_IL_SELECT_CONN_TYPE] = 0;  /*  Not used?  */
-	state.srom.data[leaf + TULIP_ROM_IL_MEDIA_COUNT] = 2;
+	state.srom.data[leaf + TULIP_ROM_IL_SELECT_CONN_TYPE]      = 0x00;  /* LO auto-sense (follow tulip manual and QEMU) */
+        state.srom.data[leaf + TULIP_ROM_IL_SELECT_CONN_TYPE + 1]  = 0x08;  /* HI => 0x800 = auto */
+	state.srom.data[leaf + TULIP_ROM_IL_MEDIA_COUNT] = 1;
 	leaf += TULIP_ROM_IL_MEDIAn_BLOCK_BASE;
-
-	state.srom.data[leaf] = 7;      /*  descriptor length  */
-	state.srom.data[leaf + 1] = TULIP_ROM_MB_21142_SIA;
-	state.srom.data[leaf + 2] = TULIP_ROM_MB_MEDIA_100TX;
-
-	/*  here comes 4 bytes of GPIO control/data settings  */
-	leaf += state.srom.data[leaf];
 
 	state.srom.data[leaf] = 15;     /*  descriptor length  */
 	state.srom.data[leaf + 1] = TULIP_ROM_MB_21142_MII;
 	state.srom.data[leaf + 2] = 0;  /*  PHY nr  */
 	state.srom.data[leaf + 3] = 0;  /*  len of select sequence  */
 	state.srom.data[leaf + 4] = 0;  /*  len of reset sequence  */
+	// no reset/select bytes since lengths are 0
+
+	// MII advertisement register (ANAR): 100TX-FD + 100TX + 10T-FD + 10T + CSMA
+	state.srom.data[leaf + 5] = 0x78;     // low byte of ANAR
+	state.srom.data[leaf + 6] = 0xe0;     // high byte: 0xe078
+	// full duplex mask
+	state.srom.data[leaf + 7] = 0x40;     // 100TX-FD + 10T-FD capable
+	state.srom.data[leaf + 8] = 0x00;
+	// TTM (TX threshold) mask
+	state.srom.data[leaf + 9] = 0x80;     // 100TX threshold bit
+	state.srom.data[leaf + 10] = 0x00;
+	// MII interface type (0 = normal)
+	state.srom.data[leaf + 11] = 0x00;
+	state.srom.data[leaf + 12] = 0x00;
+	// reserved
+	state.srom.data[leaf + 13] = 0x00;
+	state.srom.data[leaf + 14] = 0x00;
+
+#if 0
+	state.srom.data[leaf] = 15;      /*  descriptor length  */
+	state.srom.data[leaf + 1] = TULIP_ROM_MB_21142_SIA;
+	state.srom.data[leaf + 2] = TULIP_ROM_MB_MEDIA_100TX;
+	state.srom.data[leaf + 3] = 0;  /*  len of select sequence  */
+	state.srom.data[leaf + 4] = 0;  /*  len of reset sequence  */
+
+	/*  here comes 4 bytes of GPIO control/data settings  */
+	leaf += state.srom.data[leaf];
 
 	/*  5,6, 7,8, 9,10, 11,12, 13,14 = unused by GXemul  */
 	leaf += state.srom.data[leaf];
+#endif
 
 	/*  MII PHY initial state:  */
 	state.mii.state = MII_STATE_RESET;
@@ -1833,6 +1948,17 @@ void CDEC21143::ResetNIC()
 		BMSR_ACOMP |
 		BMSR_ANEG |
 		BMSR_LINK;
+
+	state.mii.phy_reg[MII_PHYIDR1] = 0x7810;      /* ID register 1 (ro) */
+
+	state.mii.phy_reg[MII_BMCR] = BMCR_S100 |
+		BMCR_AUTOEN | BMCR_FDX;
+
+	state.mii.phy_reg[MII_ANAR] = ANAR_TX_FD | ANAR_TX |
+		 ANAR_10_FD | ANAR_10 | ANAR_CSMA;
+
+	state.mii.phy_reg[MII_ANLPAR] = ANLPAR_ACK |
+		ANLPAR_TX | ANLPAR_TX_FD | ANLPAR_CSMA;
 
 	state.tx.suspend = false;
 
@@ -1883,8 +2009,9 @@ void CDEC21143::ResetNIC()
 
 	state.srom.data[126] = chksm_1;
 	state.srom.data[127] = chksm_2;
+
 #if defined(DEBUG_NIC_SROM)
-	printf("%%NIC-I-CKSUM: SROM checksum bytes are %02x, %02x\n",
+	printf("%%NIC-I-CKSUM: SROM checksum bytes are (already flipped) %02x, %02x\n",
 		state.srom.data[126], state.srom.data[127]);
 #endif
 
