@@ -1784,7 +1784,11 @@ void CDEC21143::ResetNIC()
 
 	/*  Register values at reset, according to the manual:  */
 	state.reg[CSR_BUSMODE / 8] = 0xfe000000;  /*  csr0   */
+
+        /* Under PCIID `0x141011` (21143 rev 0) with SROM v3 MII is _not_ expected by the WinNT driver */
 	state.reg[CSR_MIIROM / 8] = 0xfff483ff;   /*  csr9   */
+
+	state.reg[CSR_GPT / 8] = 0x0000ffff;      /*  csr11  */
 	state.reg[CSR_SIACONN / 8] = 0xffff0000;  /*  csr13  */
 	state.reg[CSR_SIATXRX / 8] = 0xffffffff;  /*  csr14  */
 	state.reg[CSR_SIAGEN / 8] = 0x8ff00000;   /*  csr15  */
@@ -1793,7 +1797,7 @@ void CDEC21143::ResetNIC()
 	state.rx.cur_addr = state.tx.cur_addr = 0;
 
 	/*  Version (= 1) and Chip count (= 1):  */
-	state.srom.data[TULIP_ROM_SROM_FORMAT_VERION] = 1;
+	state.srom.data[TULIP_ROM_SROM_FORMAT_VERION] = 3;
 	state.srom.data[TULIP_ROM_CHIP_COUNT] = 1;
 
 	/*  Set the MAC address:  */
@@ -1804,7 +1808,8 @@ void CDEC21143::ResetNIC()
 	state.srom.data[TULIP_ROM_CHIPn_INFO_LEAF_OFFSET(0)] = leaf & 255;
 	state.srom.data[TULIP_ROM_CHIPn_INFO_LEAF_OFFSET(0) + 1] = leaf >> 8;
 
-	state.srom.data[leaf + TULIP_ROM_IL_SELECT_CONN_TYPE] = 0;  /*  Not used?  */
+	state.srom.data[leaf + TULIP_ROM_IL_SELECT_CONN_TYPE] = 0; /* WORD here (unused) */
+	state.srom.data[leaf + TULIP_ROM_IL_SELECT_CONN_TYPE + 1] = 0;
 	state.srom.data[leaf + TULIP_ROM_IL_MEDIA_COUNT] = 2;
 	leaf += TULIP_ROM_IL_MEDIAn_BLOCK_BASE;
 
@@ -1880,9 +1885,9 @@ void CDEC21143::ResetNIC()
 
 	chksm_1 = Crc & 0xff;
 	chksm_2 = Crc >> 8;
-
 	state.srom.data[126] = chksm_1;
 	state.srom.data[127] = chksm_2;
+
 #if defined(DEBUG_NIC_SROM)
 	printf("%%NIC-I-CKSUM: SROM checksum bytes are %02x, %02x\n",
 		state.srom.data[126], state.srom.data[127]);
