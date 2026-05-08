@@ -307,6 +307,15 @@ private:
   } state;
 
   FILE* lpt;
+
+  // sys0 "arc_year_compat" config: when true, encode TOY year as offset
+  // from 1980 so the ARC console displays the correct year. Off by default
+  // because OpenVMS writes the BBW year in its own (year - 2000) format on
+  // SET TIME / shutdown, which would shift internal time forward 20 years
+  // here. VMS users wanting ARC to also display correctly should leave
+  // this off and accept ARC's year-20 display, or set it true and answer
+  // the boot time prompts
+  bool arc_year_compat;
 };
 
 extern CAliM1543C* theAli;

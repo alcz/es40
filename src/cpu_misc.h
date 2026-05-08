@@ -84,8 +84,7 @@
 
 #define SAVE_CALL_PAL_R23()                                           \
   do {                                                                \
-    if (state.call_pal_r23)                                           \
-      state.r[(state.sde ? 32 : 0) + 23] = state.pc & ~U64(0x2);      \
+    state.r[(state.sde ? 32 : 0) + 23] = state.pc & ~U64(0x2);        \
   } while (0)
 
 #define ENTER_NATIVE_CALL_PAL()                                       \

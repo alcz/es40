@@ -276,12 +276,13 @@
       break;                                                                     \
                                                                             \
     case 0x11:  /* i_ctl */                                                      \
-      state.i_ctl_other = state.r[REG_2] & U64(0x00000000007e2f67);              \
+      /* Bit 20 (CALL_PAL_R23 / ST_WAIT_64K) is hardwired-on for EV6/EV68 */     \
+      state.i_ctl_other = (state.r[REG_2] & U64(0x00000000006e2f67))             \
+                          | U64(0x0000000000100000);                             \
       state.i_ctl_vptb = sext_u64_48(state.r[REG_2] & U64(0x0000ffffc0000000));  \
       state.i_ctl_spe = (int) ((state.r[REG_2] >> 3) & 7);                       \
       state.sde = (state.r[REG_2] >> 7) & 1;                                     \
       state.hwe = (state.r[REG_2] >> 12) & 1;                                    \
-      state.call_pal_r23 = (state.r[REG_2] >> 20) & 1;                           \
       state.i_ctl_va_mode = (int) (state.r[REG_2] >> 15) & 3;                    \
       break;                                                                     \
                                                                             \
@@ -390,19 +391,12 @@
     }                                                                            \
   }
 
+ /*
+  * HW_RET (HRM 6.4.3) is a simple jump-to-target on EV6/EV68. 
+  */
  #define DO_HW_RET   do {                                                               \
     u64 target = state.r[REG_2] & ~U64(0x2);                                            \
-    if (!(target & 1) &&                                                                \
-        ((state.eien & state.eir) || (state.sien & state.sir) ||                        \
-         (state.asten && (state.aster & state.astrr & ((1 << (state.cm + 1)) - 1)))))   \
-    {                                                                                   \
-      state.exc_addr = target;                                                          \
-      set_pc(state.pal_base + INTERRUPT + 1);                                           \
-    }                                                                                   \
-    else                                                                                \
-    {                                                                                   \
-      set_pc(target);                                                                   \
-    }                                                                                   \
+    set_pc(target);                                                                     \
   } while(0)
 
 #define DO_HW_LDL   switch(function)                                          \
@@ -423,23 +417,29 @@
     state.r[REG_1] = READ_PHYS_NT(32);                                        \
     break;                                                                    \
                                                                            \
-  case 8:       /* longword virtual */                                        \
-    DATA_PHYS_NT(state.r[REG_2] + DISP_12, ACCESS_READ | NO_CHECK);           \
-    state.r[REG_1] = READ_PHYS_NT(32);                                        \
-    break;                                                                    \
-                                                                           \
-  case 10:      /* longword virtual check */                                  \
+  case 8:       /* longword virtual (HRM 6.4.1 TYPE 1002) -- access checked  \
+                 * against current mode, matching QEMU brokenpipe              \
+                 * AlphaMMUIdx_Privileged (was incorrectly bypassed via        \
+                 * NO_CHECK). */                                               \
     DATA_PHYS_NT(state.r[REG_2] + DISP_12, ACCESS_READ);                      \
     state.r[REG_1] = READ_PHYS_NT(32);                                        \
     break;                                                                    \
                                                                            \
-  case 12:      /* longword virtual alt */                                    \
-    DATA_PHYS_NT(state.r[REG_2] + DISP_12, ACCESS_READ | NO_CHECK | ALT);     \
+  case 10:      /* longword virtual check (HRM 6.4.1 TYPE 1012: WrChk) */     \
+    DATA_PHYS_NT(state.r[REG_2] + DISP_12, ACCESS_READ | WRCHK);              \
     state.r[REG_1] = READ_PHYS_NT(32);                                        \
     break;                                                                    \
                                                                            \
-  case 14:      /* longword virtual alt check */                              \
+  case 12:      /* longword virtual alt (HRM 6.4.1 TYPE 1102) -- access      \
+                 * checked using DTB_ALT_MODE, matching QEMU brokenpipe        \
+                 * AlphaMMUIdx_AltMode (was incorrectly bypassed via           \
+                 * NO_CHECK). */                                               \
     DATA_PHYS_NT(state.r[REG_2] + DISP_12, ACCESS_READ | ALT);                \
+    state.r[REG_1] = READ_PHYS_NT(32);                                        \
+    break;                                                                    \
+                                                                           \
+  case 14:      /* longword virtual alt check (HRM TYPE 1112: WrChk/Alt) */   \
+    DATA_PHYS_NT(state.r[REG_2] + DISP_12, ACCESS_READ | ALT | WRCHK);        \
     state.r[REG_1] = READ_PHYS_NT(32);                                        \
     break;                                                                    \
                                                                            \
@@ -465,23 +465,23 @@
     state.r[REG_1] = READ_PHYS_NT(64);                                        \
     break;                                                                    \
                                                                            \
-  case 9:       /* quadword virtual */                                        \
-    DATA_PHYS_NT(state.r[REG_2] + DISP_12, ACCESS_READ | NO_CHECK);           \
-    state.r[REG_1] = READ_PHYS_NT(64);                                        \
-    break;                                                                    \
-                                                                           \
-  case 11:      /* quadword virtual check */                                  \
+  case 9:       /* quadword virtual (HRM 6.4.1 TYPE 1002) -- see case 8 */    \
     DATA_PHYS_NT(state.r[REG_2] + DISP_12, ACCESS_READ);                      \
     state.r[REG_1] = READ_PHYS_NT(64);                                        \
     break;                                                                    \
                                                                            \
-  case 13:      /* quadword virtual alt */                                    \
-    DATA_PHYS_NT(state.r[REG_2] + DISP_12, ACCESS_READ | NO_CHECK | ALT);     \
+  case 11:      /* quadword virtual check (HRM 6.4.1 TYPE 1012: WrChk) */     \
+    DATA_PHYS_NT(state.r[REG_2] + DISP_12, ACCESS_READ | WRCHK);              \
     state.r[REG_1] = READ_PHYS_NT(64);                                        \
     break;                                                                    \
                                                                            \
-  case 15:      /* quadword virtual alt check */                              \
+  case 13:      /* quadword virtual alt (HRM 6.4.1 TYPE 1102) -- see case 12 */\
     DATA_PHYS_NT(state.r[REG_2] + DISP_12, ACCESS_READ | ALT);                \
+    state.r[REG_1] = READ_PHYS_NT(64);                                        \
+    break;                                                                    \
+                                                                           \
+  case 15:      /* quadword virtual alt check (HRM TYPE 1112: WrChk/Alt) */   \
+    DATA_PHYS_NT(state.r[REG_2] + DISP_12, ACCESS_READ | ALT | WRCHK);        \
     state.r[REG_1] = READ_PHYS_NT(64);                                        \
     break;                                                                    \
                                                                            \
@@ -507,13 +507,16 @@
       state.r[REG_1] = 0;                                                     \
     break;                                                                    \
                                                                            \
-  case 4:       /* longword virtual                      chk   alt    vpte */ \
-    DATA_PHYS_NT(state.r[REG_2] + DISP_12, ACCESS_WRITE | NO_CHECK);          \
+  case 4:       /* longword virtual (HRM 6.4.1 Table 6-4 TYPE 0102) -- write \
+                 * checked against current mode, matching QEMU brokenpipe      \
+                 * AlphaMMUIdx_Privileged. */                                  \
+    DATA_PHYS_NT(state.r[REG_2] + DISP_12, ACCESS_WRITE);                     \
     WRITE_PHYS_NT(state.r[REG_1], 32);                                        \
     break;                                                                    \
                                                                            \
-  case 12:      /* longword virtual alt */                                    \
-    DATA_PHYS_NT(state.r[REG_2] + DISP_12, ACCESS_WRITE | NO_CHECK | ALT);    \
+  case 12:      /* longword virtual alt (HRM TYPE 1102) -- write checked     \
+                 * using DTB_ALT_MODE, matching brokenpipe AlphaMMUIdx_AltMode.*/\
+    DATA_PHYS_NT(state.r[REG_2] + DISP_12, ACCESS_WRITE | ALT);               \
     WRITE_PHYS_NT(state.r[REG_1], 32);                                        \
     break;                                                                    \
                                                                            \
@@ -539,15 +542,16 @@
       state.r[REG_1] = 0;                                                      \
     break;                                                                     \
                                                                             \
-  case 5:       /* quadword virtual                      chk    alt    vpte */ \
-    DATA_PHYS_NT(state.r[REG_2] + DISP_12, ACCESS_WRITE | NO_CHECK);           \
-    WRITE_PHYS_NT(state.r[REG_1], 64);                                         \
-    break;                                                                     \
-                                                                            \
-  case 13:      /* quadword virtual alt */                                     \
-    DATA_PHYS_NT(state.r[REG_2] + DISP_12, ACCESS_WRITE | NO_CHECK | ALT);     \
-    WRITE_PHYS_NT(state.r[REG_1], 64);                                         \
-    break;                                                                     \
+  case 5:       /* quadword virtual (HRM 6.4.1 Table 6-4 TYPE 0102) --       \
+                 * see HW_STL case 4. */                                       \
+    DATA_PHYS_NT(state.r[REG_2] + DISP_12, ACCESS_WRITE);                     \
+    WRITE_PHYS_NT(state.r[REG_1], 64);                                        \
+    break;                                                                    \
+                                                                           \
+  case 13:      /* quadword virtual alt (HRM TYPE 1102) -- see HW_STL 12. */ \
+    DATA_PHYS_NT(state.r[REG_2] + DISP_12, ACCESS_WRITE | ALT);               \
+    WRITE_PHYS_NT(state.r[REG_1], 64);                                        \
+    break;                                                                    \
                                                                             \
   default:                                                                     \
     UNKNOWN2;                                                                  \

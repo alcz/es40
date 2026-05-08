@@ -381,6 +381,8 @@ void CAliM1543C::init()
 		state.toy_stored_data[i] = 0;
 	state.toy_offset = 0;
 
+	arc_year_compat = myCfg->get_myParent()->get_bool_value("arc_year_compat", false);
+
 	// Optional absolute time override from sys0:
 	//   time = "YYYY-MM-DD" or "YYYY-MM-DD HH:MM:SS"
 	// Interpreted as UTC to match the runtime ARC/SRM TOY edit path
@@ -1168,7 +1170,7 @@ void CAliM1543C::toy_write(u32 address, u8 data)
 				state.toy_stored_data[6] = (u8)(stime.tm_wday + 1);
 				state.toy_stored_data[7] = (u8)(stime.tm_mday);
 				state.toy_stored_data[8] = (u8)(stime.tm_mon + 1);
-				state.toy_stored_data[9] = (u8)(stime.tm_year - 80); // ARC TOY year is offset from 1980
+				state.toy_stored_data[9] = (u8)(arc_year_compat ? (stime.tm_year - 80) : (stime.tm_year % 100));
 			}
 			else
 			{
@@ -1190,7 +1192,10 @@ void CAliM1543C::toy_write(u32 address, u8 data)
 				state.toy_stored_data[6] = (u8)(stime.tm_wday + 1);
 				state.toy_stored_data[7] = (u8)(((stime.tm_mday / 10) << 4) | (stime.tm_mday % 10));
 				state.toy_stored_data[8] = (u8)((((stime.tm_mon + 1) / 10) << 4) | ((stime.tm_mon + 1) % 10));
-				state.toy_stored_data[9] = (u8)((((stime.tm_year - 80) / 10) << 4) | ((stime.tm_year - 80) % 10)); // ARC TOY year is offset from 1980
+				{
+					int yy_dec = arc_year_compat ? (stime.tm_year - 80) : (stime.tm_year % 100);
+					state.toy_stored_data[9] = (u8)(((yy_dec / 10) << 4) | (yy_dec % 10));
+				}
 			}
 
 			// Debian Linux wants something out of 0x0a.  It gets initialized
@@ -1335,7 +1340,15 @@ void CAliM1543C::toy_write(u32 address, u8 data)
 			st.tm_hour = binary ? hh : unbcd(hh);
 			st.tm_mday = binary ? dd : unbcd(dd);
 			st.tm_mon  = (binary ? mo : unbcd(mo)) - 1;
-			st.tm_year = (binary ? yy : unbcd(yy)) + 80;   // ARC TOY year is offset from 1980
+			if (arc_year_compat)
+			{
+				st.tm_year = (binary ? yy : unbcd(yy)) + 80;   // 1980-base
+			}
+			else
+			{
+				st.tm_year = binary ? yy : unbcd(yy);
+				if (st.tm_year < 70) st.tm_year += 100;   // 20XX pivot
+			}
 
 			if (!h24 &&  pm && st.tm_hour < 12) st.tm_hour += 12;
 			if (!h24 && !pm && st.tm_hour == 12) st.tm_hour = 0;

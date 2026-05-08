@@ -25,18 +25,23 @@ VS build directory.
 
 ## Status  
   
+## 5/8/26 - TOY clock issue - SOUND SUPPORT! ES1370 Audio device! 
+For VMS it was not a one time boot prompt, I was wrong about how VMS handles  
+the time offsets. It sets the clock WITHOUT ARC's 1980 assumption.  
+So, we now make it a configurable flag.  
+  
+The ES1370 audio device outputs via the SDL layer. You can use guest OS volume  
+controls or OS mixer level controls instead.  
+  
 ## 5/7/26 - This one deserves its own notice. TOY clock handling change.  
 ARC base is 1980. This would make year byte 26 in TOY byte 9 2006 instead of  
 2026. But for everyone with installed VMS disk images out there, your saved  
-clock data in VMS will see a jump from 26 to 46 (which makes ARC correct)  
-This will cause a one-time boot prompt for the date and time, just entering  
-the date is enough to satisfy it, and after a safe shutdown, it will come up  
-without prompting again utilizng the new saved offset/base data.  
-  
+clock data in VMS will see a jump from 26 to 46 (which makes ARC correct). 
+    
 This, of course, means in 2079 we will have to binary patch ARC to move the  
 base to allow for dates beyond 2079 to be displayed. Unkown how this would   
 affect Windows NT variants.  
-  
+    
 ## 5/7/26 - Tru64 support. Red Hat 7.2 works. Timers fixed.  
 Thanks to a surprising AXPbox we have finalized the remaining SCSI flaws  
 that were blocking Tru64, and as well implemented some user-friendly features.  

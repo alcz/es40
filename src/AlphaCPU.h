@@ -525,7 +525,6 @@ private:
     u64   i_ctl_other;  /**< various bits in IPR I_CTL that have no meaning to the emulator */
     u64   mm_stat;      /**< IPR MM_STAT: memory management status [HRM p 5-28..29] */
     bool  hwe;          /**< IPR I_CLT: hwe (allow palmode ins in kernel mode) [HRM p 5-15..17] */
-    bool  call_pal_r23; /**< IPR I_CTL: save CALL_PAL return PC in visible r23 when set */
     int   m_ctl_spe;    /**< IPR M_CTL: spe (Super Page mode enabled) [HRM p 5-29..30] */
     int   i_ctl_spe;    /**< IPR I_CTL: spe (Super Page mode enabled) [HRM p 5-15..18] */
     u64   pmpc;
@@ -635,22 +634,10 @@ inline void CAlphaCPU::set_PAL_BASE(u64 pb)
 
   // VMS PALcode uses base 0x8000
   state.pal_vms = (pb == U64(0x8000));
+  //state.pal_vms = false;
 
-  // Log PAL type change for debugging
 #ifdef DEBUG_PAL
   printf("%%CPU-I-PALSWITCH: PAL=%016" PRIx64 " p21=%016" PRIx64 " p22=%016" PRIx64 " r22=%016" PRIx64 "\n", pb, state.r[53], state.r[54], state.r[22]);
-#endif
-
-    /*
-     * removed synthetic ARC PAL scratch/PCB/PTBR/KSP state.
-     *
-     * ARC clears a large BSS range during early boot. Hard-coding 
-     * PAL scratch values into guest RAM at 0x7cf420 and causes the 
-     * firmware to erase emulator executed state, which in turn derails 
-     * the first post-BSS PAL/MMU path.
-     */
-
-#ifdef DEBUG_PAL
   // Dump PAL scratch area contents for non-VMS PAL
   if (!state.pal_vms && state.r[53] != 0) {
 

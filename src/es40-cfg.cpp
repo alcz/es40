@@ -479,18 +479,6 @@ int main(int argc, char* argv[])
 
 	os << "  rom.srm = \"" << rom_q.ask() << "\";\n";
 
-	rom_q.setQuestion("Where should the decompressed ROM image be saved?");
-	rom_q.setExplanation("This file will be created the first time the emulator runs.");
-#if defined(_WIN32)
-	rom_q.setDefault("rom\\decompressed.rom");
-#elif defined(__VMS)
-	rom_q.setDefault("[.ROM]DECOMPRESSED.ROM");
-#else
-	rom_q.setDefault("rom/decompressed.rom");
-#endif
-
-	os << "  rom.decompressed = \"" << rom_q.ask() << "\";\n";
-
 	rom_q.setQuestion("Where should the Flash ROM image be saved?");
 #if defined(_WIN32)
 	rom_q.setDefault("rom\\flash.rom");
@@ -777,6 +765,7 @@ int main(int argc, char* argv[])
 #endif
 	card_q.addAnswer("scsi", "sym53c810", "Symbios 53C810 narrow SCSI controller");
 	card_q.addAnswer("wide scsi", "sym53c895", "Symbios 53C895 wide SCSI controller (doesn't work with OpenVMS)");
+	card_q.addAnswer("es1370 audio", "es1370", "ES1370 Audio card (works only with Windows NT 4.0)");
 
 	/* Loop until there are no more PCI
 	 * cards to add.
