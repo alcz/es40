@@ -1194,7 +1194,7 @@ int CDEC21143::dec21143_rx()
 	int           buf2_size;
 
 	//unsigned char descr[16];
-	int           writeback_len = 4;
+	//int           writeback_len = 4;
 
 	//unsigned char descr[16];
 	int           to_xfer;
@@ -1236,10 +1236,10 @@ int CDEC21143::dec21143_rx()
 		for (int i = 0; i < 4; i++) descr[i] = bswap32_local(descr[i]);
 	}
 
-	//rdes0 = descr[0] + (descr[1]<<8) + (descr[2]<<16) + (descr[3]<<24);
-	//rdes1 = descr[4] + (descr[5]<<8) + (descr[6]<<16) + (descr[7]<<24);
-	//rdes2 = descr[8] + (descr[9]<<8) + (descr[10]<<16) + (descr[11]<<24);
-	//rdes3 = descr[12] + (descr[13]<<8) + (descr[14]<<16) + (descr[15]<<24);
+	rdes0 = descr[0];
+	rdes1 = descr[1];
+	rdes2 = descr[2];
+	rdes3 = descr[3];
 
 	/*  Only use descriptors owned by the 21143:  */
 	if (!(rdes0 & TDSTAT_OWN))
@@ -1258,9 +1258,9 @@ int CDEC21143::dec21143_rx()
 	bufsize = buf1_size ? buf1_size : buf2_size;
 
 	//state.reg[CSR_STATUS/8] &= ~STATUS_RS; // dth: wrong, this is receive state stopped
-	//  printf("{ dec21143_rx: base = 0x%08x }\n", (int)addr);
-	//      debug("{ RX (%llx): 0x%08x 0x%08x 0x%x 0x%x: buf %i bytes at 0x%x }\n",
-	//          (long long)addr, rdes0, rdes1, rdes2, rdes3, bufsize, (int)bufaddr);
+	//  printf("{ dec21143_rx: base = 0x%08x }\n", addr);
+	//      debug("{ RX (%08x): 0x%08x 0x%08x 0x%x 0x%x: buf %d bytes at 0x%x }\n",
+	//          addr, rdes0, rdes1, rdes2, rdes3, bufsize, (int)bufaddr);
 	// Turn off all status bits, and give up ownership
 	rdes0 = 0x00000000;
 
@@ -1305,8 +1305,8 @@ int CDEC21143::dec21143_rx()
 		//        debug("frame complete.\n");
 		rdes0 |= TDSTAT_Rx_LS;
 
-		/*  Set the frame length:  */
-		rdes0 |= ((state.rx.current.len + 4) << 16) & TDSTAT_Rx_FL; /* include CRC like HW/QEMU */
+		/*  Set the frame length: */
+		rdes0 |= ((state.rx.current.len) << 16) & TDSTAT_Rx_FL; /* include CRC like HW/QEMU */
 
 		/* Set multicast / filter-fail flags. */
 		const u8* dst = state.rx.current.frame;
@@ -1349,6 +1349,7 @@ int CDEC21143::dec21143_rx()
 		/*  Frame too long? (1518 is max ethernet frame length)  */
 		if (state.rx.current.len > 1518)
 			rdes0 |= TDSTAT_Rx_TL;
+		// ^^ this is quite not possible in current code path...?
 
 		// set receive interrupt and receive state to waiting-for-packet
 		state.reg[CSR_STATUS / 8] = (state.reg[CSR_STATUS / 8] & ~STATUS_RS) |
@@ -1374,7 +1375,7 @@ int CDEC21143::dec21143_rx()
 			state.rx.cur_addr = rdes3;
 		else
 			// implicit chain
-			state.rx.cur_addr += sizeof(descr) + state.descr_skip;
+			state.rx.cur_addr += (4 * sizeof(uint32_t)) + state.descr_skip;
 	}
 
 	return 1; // indicate processing has occurred
@@ -1430,7 +1431,8 @@ int CDEC21143::dec21143_tx()
 	bufaddr = buf1_size ? tdes2 : tdes3;
 	bufsize = buf1_size ? buf1_size : buf2_size;
 
-	//state.reg[CSR_STATUS/8] &= ~STATUS_TS;
+	state.reg[CSR_STATUS/8] &= ~STATUS_TS;
+
 	if (tdes1 & TDCTL_ER)    // end-of-ring, return to base
 		state.tx.cur_addr = state.reg[CSR_TXLIST / 8];
 	else
@@ -1517,13 +1519,31 @@ int CDEC21143::dec21143_tx()
 		{
 			/* 2KB scratch (matches allocation in init()), large enough for legal ethernet frames */
 			const int tx_cap = 2048; /* aligned with QEMU tulip's 2KB frame buffers */
-			int avail = tx_cap - state.tx.cur_buf_len;
-			int copy = (bufsize < avail) ? bufsize : (avail > 0 ? avail : 0);
-			if (copy > 0) {
-				do_pci_read(bufaddr, state.tx.cur_buf + state.tx.cur_buf_len, 1, copy);
-				state.tx.cur_buf_len += copy;
-			}
 			/* If guest tried to exceed scratch capacity, we will mark error at LS. */
+
+			/* Buffer 1 */
+			if (buf1_size > 0)
+			{
+				int avail = tx_cap - state.tx.cur_buf_len;
+				int copy = (buf1_size < avail) ? buf1_size : (avail > 0 ? avail : 0);
+				if (copy > 0)
+				{
+					do_pci_read(tdes2, state.tx.cur_buf + state.tx.cur_buf_len, 1, copy);
+					state.tx.cur_buf_len += copy;
+				}
+			}
+
+			/* Buffer 2 - only valid if NOT chained (CH=0) and NOT end-of-ring (ER=0) */
+			if (buf2_size > 0 && !(tdes1 & TDCTL_CH) && !(tdes1 & TDCTL_ER))
+			{
+				int avail = tx_cap - state.tx.cur_buf_len;
+				int copy = (buf2_size < avail) ? buf2_size : (avail > 0 ? avail : 0);
+				if (copy > 0)
+				{
+					do_pci_read(tdes3, state.tx.cur_buf + state.tx.cur_buf_len, 1, copy);
+					state.tx.cur_buf_len += copy;
+				}
+			}
 		}
 
 		/*  Last segment? Then actually transmit it:  */
@@ -1584,15 +1604,14 @@ int CDEC21143::dec21143_tx()
 		TDSTAT_Tx_LO | TDSTAT_Tx_TO))
 		tdes0 |= TDSTAT_ES;
 
-	/*  Descriptor writeback:  */
+	/*  Descriptor writeback:
+	    only write back tdes0 - the status word
+	    tdes1/tdes2/tdes3 are read-only from NIC's perspective */
+
 	descr[0] = tdes0;
-	descr[1] = tdes1;
-	descr[2] = tdes2;
-	descr[3] = tdes3;
-	if (state.reg[CSR_BUSMODE / 8] & BUSMODE_DBO) {
-		for (int i = 0; i < 4; i++) descr[i] = bswap32_local(descr[i]);
-	}
-	do_pci_write(addr, descr, 4, 4);
+	if (state.reg[CSR_BUSMODE / 8] & BUSMODE_DBO)
+	    descr[0] = bswap32_local(descr[0]);
+	do_pci_write(addr, descr, 1, 4);
 
 	return 1;
 }
